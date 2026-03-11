@@ -4,7 +4,7 @@
 ### After you implement the task, you need to set the LOCAL_TASK_DIR to the local directory of the task.
 
 export LOCAL_TASK_DIR="YOUR IMPLEMENTED TASK LOCAL DIR" # e.g. ./tasks/game/magic_24
-export REMOTE_OUTPUT_DIR="output_test"  # change to the output directory you want to test if the eval function is working correctly
+export REMOTE_OUTPUT_DIR="output_test_pos"  # use output_test_pos if you uploaded test data via upload_test_data_to_remote.py; else output_test after running start()
 
 # **UNCOMMENT THIS IF YOU ARE ASSIGNED WITH A LITELLM KEY**
 # export OPENAI_API_BASE="https://litellm-991596698159.us-west1.run.app"

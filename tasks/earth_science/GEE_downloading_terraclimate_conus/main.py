@@ -25,18 +25,26 @@ class TaskConfig(GeneralTaskConfig):
     """Task configuration for TerraClimate data download."""
 
     TASK_TAG: str = "GEE_downloading_terraclimate_conus"
-    TASK_CATEGORY: str = "earth_science_tasks"
+    # Must match VM folder name (VM uses "earth_science", not "earth_science_tasks")
+    TASK_CATEGORY: str = "earth_science"
 
     # Task-specific configuration
     # For testing: set GEE_TEST_PERIOD=6 to use 2016-2020 only (6 years, fewer files)
    
     EXPECTED_FILE_PATTERN: str = "terra_"
-    EXPECTED_MONTHS: int = 60  # 12 monthly means (same for 1 year or 8 years)
+    EXPECTED_MONTHS: int = 60  # 5 years × 12 months (2016–2020)
 
-    # Time range and variables for evaluation
+    # Time range and variables for evaluation (match VM: 2016–2020)
     TEMPORAL_START: str = "2016-01-01"
-    TEMPORAL_END: str = "2016-12-31"
+    TEMPORAL_END: str = "2020-12-31"
     required_variables: tuple = ("pr",)
+
+    # Deterministic question for evaluation (single number to check)
+    DETERMINISTIC_QUESTION_YEAR: int = 2016
+    DETERMINISTIC_QUESTION_VAR: str = "pr"
+    # Berkeley, CA (used when NetCDF has lat/lon coordinates)
+    DETERMINISTIC_QUESTION_LAT: float = 37.8715
+    DETERMINISTIC_QUESTION_LON: float = -122.2730
 
     # Authentication configuration (for benchmark - use service account via env vars)
     GEE_CREDENTIALS_PATH: str = os.environ.get("GEE_CREDENTIALS_PATH", "")
@@ -60,18 +68,10 @@ class TaskConfig(GeneralTaskConfig):
         """Task description shown to the agent."""
         start_yr = self.TEMPORAL_START[:4]
         end_yr = self.TEMPORAL_END[:4]
-        return f"""Download TerraClimate dataset for CONUS from 2016-01-01 to 2016-12-31, only have the pr variable, calculate monthly means, download as TIF images, and combine into a NetCDF file using Google Earth Engine.
+        return f"""Download TerraClimate dataset for CONUS from 2016-01-01 to 2020-12-31, only have the pr variable, calculate monthly means, download as TIF images, and combine into a NetCDF file using Google Earth Engine.
 
 Goal:
-- open visual studio code and write a python script 
-- The python script should use Google Earth Engine Python API to access TerraClimate collection (IDAHO_EPSCOR/TERRACLIMATE)
-- Filter data for CONUS region using the provided tif file
-- choose the variable "pr"
-- Calculate monthly means by grouping images by month (1-12) across years 2016-01-01 to 2016-12-31
-- Export monthly means and download to local machine, named by yyyy-mm-dd.tif
-- Combine all TIF files into a single NetCDF file using Python 
-- Save the final NetCDF file to the output directory (preferred filename pattern: terra_pr_2016_2023.nc, but any .nc filename is acceptable)
-
+- Download TerraClimate precipitation monthly mean data for CONUS from 2016-01-01 to 2020-12-31, using google earth engine python api, combined it into a NetCDF file.  
 
 Authentication:
 - **Service Account**: The key file is in the input folder. Use this path in your Python script:
@@ -92,10 +92,13 @@ Output:
 - TIF files containing the monthly means of the target area
 - NC file containing the monthly means of the target area
 - Include these variables: pr
-- time range: 2016-01-01 to 2016-12-31
+- time range: 2016-01-01 to 2020-12-31
 - output file: 
-    terra_2016-2020_pr.nc
-    2016-12-01.tif, ... , 2020-12-01.tif
+    terra_2016_2020_pr.nc (or similar)
+    2016-01-01.tif, ... , 2020-12-01.tif (60 monthly TIFs)
+
+Evaluation (deterministic check):
+- The evaluation will verify the answer to: "What is the mean precipitation (pr) for year 2016 at Berkeley, CA (lat=37.8715, lon=-122.273)?" — computed from your output NetCDF (nearest grid point to that location) and compared to the reference. Ensure your NC file has correct pr values and coordinates so this check passes.
 """
 
     def to_metadata(self) -> dict:
@@ -108,6 +111,10 @@ Output:
             "temporal_start": self.TEMPORAL_START,
             "temporal_end": self.TEMPORAL_END,
             "required_variables": list(self.required_variables),
+            "deterministic_question_year": self.DETERMINISTIC_QUESTION_YEAR,
+            "deterministic_question_var": self.DETERMINISTIC_QUESTION_VAR,
+            "deterministic_question_lat": self.DETERMINISTIC_QUESTION_LAT,
+            "deterministic_question_lon": self.DETERMINISTIC_QUESTION_LON,
             "gee_credentials_path": self.GEE_CREDENTIALS_PATH,
             "gee_service_account": self.GEE_SERVICE_ACCOUNT,
             "gee_account_email": self.GEE_ACCOUNT_EMAIL,
@@ -293,6 +300,110 @@ def _evaluate_netcdf_content(
     return checks
 
 
+def _evaluate_deterministic_question(
+    output_path: str,
+    reference_path: str,
+    var: str,
+    year: int,
+    lat: float,
+    lon: float,
+) -> dict:
+    """Evaluate a single deterministic question: mean of `var` for `year` at (lat, lon).
+
+    Question: "What is the mean precipitation (pr) for year {year} at location (lat, lon)?"
+    Uses nearest grid point if the NetCDF has lat/lon coordinates; otherwise falls back to center pixel.
+    Uses year-based filtering to avoid issues with non-monotonic or non-standard time coordinates.
+    """
+    import numpy as np
+    import xarray as xr
+
+    def _select_year(da: xr.DataArray, y: int) -> xr.DataArray:
+        """Select timesteps for the given year (works with any time frequency)."""
+        if "time" not in da.dims:
+            return da
+        # Use .dt.year to avoid slice; works with non-monotonic or mid-month times
+        return da.where(da.time.dt.year == y, drop=True)
+
+    def _lat_lon_coord_names(ds):
+        """Return (lat_name, lon_name) if dataset has geographic coords, else (None, None)."""
+        if "lat" in ds.coords and "lon" in ds.coords:
+            return ("lat", "lon")
+        if "latitude" in ds.coords and "longitude" in ds.coords:
+            return ("latitude", "longitude")
+        return (None, None)
+
+    with xr.open_dataset(reference_path) as ref_ds:
+        if var not in ref_ds.data_vars:
+            return {
+                "check": "deterministic_question",
+                "passed": False,
+                "message": f"Reference has no variable {var}",
+                "expected_value": None,
+                "actual_value": None,
+            }
+        lat_name, lon_name = _lat_lon_coord_names(ref_ds)
+        ref_var = _select_year(ref_ds[var], year)
+        if lat_name and lon_name:
+            ref_mean = (
+                ref_var.mean(dim="time")
+                .sel(**{lat_name: lat, lon_name: lon}, method="nearest")
+                .values
+            )
+            location_desc = f"({lat}, {lon})"
+        else:
+            nx, ny = ref_ds.sizes.get("x", 0), ref_ds.sizes.get("y", 0)
+            if nx == 0 or ny == 0:
+                return {
+                    "check": "deterministic_question",
+                    "passed": False,
+                    "message": "Reference has no x or y dimension",
+                    "expected_value": None,
+                    "actual_value": None,
+                }
+            xi, yi = nx // 2, ny // 2
+            ref_mean = ref_var.mean(dim="time").isel(x=xi, y=yi).values
+            location_desc = f"center (x={xi},y={yi})"
+        expected = float(np.nan_to_num(ref_mean, nan=0.0))
+
+    with xr.open_dataset(output_path) as out_ds:
+        if var not in out_ds.data_vars:
+            return {
+                "check": "deterministic_question",
+                "passed": False,
+                "message": f"Output has no variable {var}",
+                "expected_value": expected,
+                "actual_value": None,
+            }
+        lat_name_out, lon_name_out = _lat_lon_coord_names(out_ds)
+        out_var = _select_year(out_ds[var], year)
+        if lat_name_out and lon_name_out:
+            out_mean = (
+                out_var.mean(dim="time")
+                .sel(**{lat_name_out: lat, lon_name_out: lon}, method="nearest")
+                .values
+            )
+        else:
+            nx, ny = out_ds.sizes.get("x", 0), out_ds.sizes.get("y", 0)
+            xi, yi = nx // 2, ny // 2
+            out_mean = out_var.mean(dim="time").isel(x=xi, y=yi).values
+        actual = float(np.nan_to_num(out_mean, nan=0.0))
+
+    rtol, atol = 1e-5, 1e-8
+    passed = np.isclose(expected, actual, rtol=rtol, atol=atol)
+    msg = (
+        f"Mean {var} {year} at {location_desc}: expected {expected:.6f}, got {actual:.6f}"
+        if not passed
+        else f"Mean {var} {year} at {location_desc}: {actual:.6f} (matches reference)"
+    )
+    return {
+        "check": "deterministic_question",
+        "passed": passed,
+        "message": msg,
+        "expected_value": expected,
+        "actual_value": actual,
+    }
+
+
 @cb.evaluate_task(split="train")
 async def evaluate(task_cfg, session: cb.DesktopSession) -> list[float]:
     """Evaluate agent outputs against reference.
@@ -386,6 +497,17 @@ async def evaluate(task_cfg, session: cb.DesktopSession) -> list[float]:
             checks.extend(nc_checks)
             for c in nc_checks:
                 ctx.add_score(1.0 if c["passed"] else 0.0)
+
+            # Deterministic question: "What is the mean of {var} for year {year} at (lat, lon)?"
+            det_year = metadata.get("deterministic_question_year", 2016)
+            det_var = metadata.get("deterministic_question_var", "pr")
+            det_lat = metadata.get("deterministic_question_lat", 37.8715)
+            det_lon = metadata.get("deterministic_question_lon", -122.2730)
+            det_check = _evaluate_deterministic_question(
+                tmp_out, tmp_ref, var=det_var, year=det_year, lat=det_lat, lon=det_lon
+            )
+            checks.append(det_check)
+            ctx.add_score(1.0 if det_check["passed"] else 0.0)
 
         print("\nEvaluation Results:")
         for c in checks:

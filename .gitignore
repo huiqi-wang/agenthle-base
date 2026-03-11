@@ -34,6 +34,13 @@ Thumbs.db
 *.log
 results/
 
+# Local-only eval script (do not commit)
+test_eval_local.sh
+
+# GEE task folder: only commit main.py
+tasks/earth_science/GEE_downloading_terraclimate_conus/*
+!tasks/earth_science/GEE_downloading_terraclimate_conus/main.py
+
 # cua-bench config
 trycua/.cua/*.yaml
 trycua/demonstrations/
