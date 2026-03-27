@@ -30,6 +30,15 @@ Thumbs.db
 *.log
 results/
 
+# Local-only scripts with credentials (do not commit)
+test_eval_local.sh
+test_launch_local.sh
+
+# Earth science tasks: only commit main.py, ignore everything else
+tasks/earth_science/**/*
+!tasks/earth_science/**/
+!tasks/earth_science/**/main.py
+
 # cua-bench config
 trycua/.cua/*.yaml
 trycua/demonstrations/
